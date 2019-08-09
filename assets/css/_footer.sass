@@ -1,29 +1,28 @@
 footer
 	padding: 0 1em
 	margin-top: 5vh
+	margin-bottom: 5vh
 	border-style: solid none none none
 	border-width: $thinBorder
 	border-color: $ink
+	display: flex
+	flex-flow: column nowrap
+	justify-content: space-evenly
+	align-content: center
+	flex-basis: auto
 
 	nav
-		display: block
-		margin-bottom: 20px
-		text-align: center
-		margin-left: auto
-		margin-right: auto
-		float: center
-		max-width: 100%
-		min-width: 10%
+		flex-basis: content
+		align-self: center
+		align-content: space-around
 
 		a
 			text-decoration: none
 
 		.email
-			display: inline-block
 			color: $ink
 			background-color: white
 			padding: 0px 5px 0px 5px
-			margin-bottom: 0px
 			border-color: $ink
 			border-style: solid
 			border-width: $thickBorder
@@ -35,6 +34,9 @@ footer
 				background-color: $ink
 
 		.social
+			display: flex
+			flex-flow: row nowrap
+			justify-content: space-evenly
 			font-size: 30px
 			letter-spacing: 5px
 
