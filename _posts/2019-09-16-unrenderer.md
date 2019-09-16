@@ -1,6 +1,6 @@
 ---
 layout: default
-title: "Unrenderer"
+title: "Unrendering triangle meshes with gradient descent"
 ---
 <div class="unrenderer">
 <canvas id="demo02_canvas" width="512px" height="512px">
@@ -34,9 +34,9 @@ title: "Unrenderer"
 </div>
 </div>
 <script src="/assets/js/webgl-debug.js"></script>
-<script src="/assets/js/posts/demo02.js"></script>
+<script src="/assets/js/posts/demo01.js"></script>
 
-# Unrenderer
+# Unrendering triangle meshes with gradient descent
 Over the past few weeks I have been exploring a new technique for training triangle
 meshes from 3D models. The basic idea is to render a test image, evaluate it by
 computing the mean squared error between the test image and a reference, and then
@@ -56,7 +56,7 @@ let model = {
 	]
 };
 ```
-Rendering this base model we get the following:
+Rendering this base model yeilds the following:
 <img src="/assets/img/posts/unrender01/screenshot_untrained.png"
 	alt="screenshot of untrained model" class="unrender_screenshot"/>
 In order to compute the error of a model, we render the test image into a texture 
@@ -85,7 +85,7 @@ mean squared error in javascript:
 ```
 let error = pixels.reduce((a, b) => (a + (b/255.0)))/(width * height * 3);
 ```
-Our goal then is to tweak the properties of the model (forground colour,
+The goal here is now to tweak the properties of the model (forground colour,
 background colour and vertex positions), in order to minimise the error calculated above.
 We do this using gradient descent, the basic idea behind gradient descent is to train
 one attribute at a time, by taking the derivative of the cost function, multiplying 
@@ -93,11 +93,10 @@ it by a `trainingRate` and then subtracting that from the original value:
 ```
 newValue = oldValue - trainingRate * derivative(oldValue)
 ```
-Often in machine learning we would solve this analytically with partial derivatives,
-but since the cost function involves rendering the model this isn't really feasable,
-so to approximate the derivative we can just render the model twice adding a small delta
-value in between. Assuming a small delta, this should give us a decent aproximation of
-the derivative. The new formula is as follows:
+Even the simple renderer used here is too for an analytical approach to be feasable,
+but the derivative can be trivially aproximated by rendering the model twice,
+adding a small delta in between. With a sufficently small delta, this should be a
+decent aproximation of the derivative. The new formula is as follows:
 ```
 newValue = oldValue - trainingRate * (newError - oldError)/delta
 ```

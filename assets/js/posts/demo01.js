@@ -1,275 +1,295 @@
-const canvas = document.querySelector("#demo01_canvas");
-const gl = WebGLDebugUtils.makeDebugContext(canvas.getContext('webgl', {
-		alpha : false
-	}));
+"use strict";
 
-let model = {
-	backgroundColor: [0.25, 0.25, 0.25],
-	forgroundColor: [0.75, 0.75, 0.75],
-	vertices: [
-		-0.5, -0.5,
-		0.5, -0.5,
-		0.0, 0.5
-	]
-};
+const width = 512;
+const height = 512;
 
-let vertexBuffer = null;
-let testProgram = null; // Shader program for rendering test images
-let evaluationProgram = null; // Shader program for rendering evaluating images
-let testColorUniformLocation = null;
-let testPositionAttributeLocation = null;
-let evaluationPositionAttributeLocation = null;
-let evaluationHypothesisUniform = null;
-let evaluationExperienceUniform = null;
-let textures = [];
-let textureIndex = 0; // Which texture are we training to?
+let errorDisplay = document.querySelector("#unrender_error");
+let displayErrorMap = false;
+let pause = false;
+let canvas = document.querySelector("#demo02_canvas");
+console.assert(canvas.width == width && canvas.height == height);
 
-function loadShaderProgram(vertSrc, fragSrc) {
+let gl = WebGLDebugUtils.makeDebugContext(canvas.getContext('webgl'));
+
+function loadShaderProgram(vertexSrc, fragmentSrc) {
 	function loadShader(type, source) {
-  		const shader = gl.createShader(type);
+		let shader = gl.createShader(type);
+		gl.shaderSource(shader, source);
+		gl.compileShader(shader);
+		if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) // Error
+			console.error(gl.getShaderInfoLog(shader) + '\n\n' + source);
+		return shader;
+	}
 
-  		gl.shaderSource(shader, source);
-  		gl.compileShader(shader);
-
-  		// Check for build errors
-  		if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    			console.error(
-				'Shader compilation error:'
-				 + gl.getShaderInfoLog(shader) + '\n'
-				 + source);
-    			gl.deleteShader(shader);
-    			return null;
-  		}
-
-  		return shader;
-	}	
-
-	const vertexShader = loadShader(gl.VERTEX_SHADER, vertSrc);
-	const fragmentShader = loadShader(gl.FRAGMENT_SHADER, fragSrc);
-
-	const shaderProgram = gl.createProgram();
+	let vertexShader = loadShader(gl.VERTEX_SHADER, vertexSrc);
+	let fragmentShader = loadShader(gl.FRAGMENT_SHADER, fragmentSrc);
+	let shaderProgram = gl.createProgram();
 	gl.attachShader(shaderProgram, vertexShader);
 	gl.attachShader(shaderProgram, fragmentShader);
 	gl.linkProgram(shaderProgram);
+	if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) // Error
+		console.error(gl.getProgramInfoLog(shaderProgram));
 
-	// Check for link errors
-	if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
-		console.error(
-			'Shader program link error: ',
-			+ gl.getProgramInfoLog(shaderProgram));
-	}
-	
 	return shaderProgram;
 }
 
-function createFrameBuffer(width, height) {
-	// Texture
-	let targetTexture = gl.createTexture();
-	gl.bindTexture(gl.TEXTURE_2D, targetTexture);
-	{
-		gl.texImage2D(
-			gl.TEXTURE_2D,
-			0, // level
-			gl.RGBA, // internal format
-			width, height,
-			0, // border
-			gl.RGBA, // src format
-			gl.UNSIGNED_BYTE,
-			null); // no data supplied
-
-		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+function loadTexture (path) {
+	let texture = gl.createTexture();
+	gl.bindTexture(gl.TEXTURE_2D, texture);
+	
+	let temp = new Uint8Array([255, 0, 255, 255]);
+	gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, temp);
+	gl.bindTexture(gl.TEXTURE_2D, null);
+	
+	let img = new Image();
+	img.onload = function() {
+		gl.bindTexture(gl.TEXTURE_2D, texture);
+		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+		gl.generateMipmap(gl.TEXTURE_2D);
 	}
 
-	// Frame buffer
-	let frameBuffer = gl.createFramebuffer();
-	gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuffer);
-	gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, targetTexture, 0);
-	gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-
-	return {
-		texture: targetTexture,
-		framebuffer: frameBuffer
-	};
+	img.src = path;
+	return texture;
 }
 
+let errorShaderProgram = null;
+let errorAttribXYUV = null;
+let errorUniformExperience = null;
+let errorUniformHypothesis = null;
+
+let flatShaderProgram = null;
+let flatAttribXY = null;
+let flatUniformColor = null;
+
+let screenVBO = null; // Full screen triangle
+let triangleVBO = null; // Test subject
+
+let testFrameBuffer = null; // Framebuffer for test renders
+let testTexture = null; // Texture for reading test renders
+
+let textures = [];
+let textureIndex = 0;
+
+let model = {};
+let delta = 1/255;
+
+let bgTrainRate = 0.1;
+let fgTrainRate = 0.1;
+let vertTrainRate = 0.9;
+
+function switchModel(index) {
+	textureIndex = index;
+	model = {
+		backgroundColor: [0.25, 0.25, 0.25],
+		forgroundColor: [0.75, 0.75, 0.75],
+		vertices: [
+				-0.5, -0.5,
+				 0.5, -0.5,
+				 0.0, 0.5
+		]
+	};
+};
+switchModel(0);
+
 function init() {
-	// Vertex Buffer
-	vertexBuffer = gl.createBuffer();
+	// Vertex Buffers
+	screenVBO = gl.createBuffer();
+	gl.bindBuffer(gl.ARRAY_BUFFER, screenVBO);
+	let data = new Float32Array([
+		-1.0, -1.0, 0.0, 1.0,
+		-1.0, 3.0, 0.0, -1.0,
+		3.0, -1.0, 2.0, 1.0
+	]);
+	gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+	triangleVBO = gl.createBuffer(); 
 
-	// Shader Programs
-	testProgram = loadShaderProgram(
-		// Vertex Shader
-		`uniform vec3 u_color;
-		attribute vec2 a_position;
-		varying highp vec4 v_color;
-
-		void main() {
-			v_color = vec4(u_color, 1.0);
-			gl_Position = vec4(a_position, 0.0, 1.0);
-		}`,
-		// Fragment Shader
-		`varying highp vec4 v_color;
-
-		void main() {
-			gl_FragColor = v_color;
-		}
-	`);
-
-	evaluationProgram = loadShaderProgram(
-		// Vertex Shader
-		`attribute vec4 a_position;
+	// Shaders
+	errorShaderProgram = loadShaderProgram(
+		`// Vertex Shader
+		attribute vec4 a_xyuv;
 		varying highp vec2 v_texture_coord;
 		void main() {
-			v_texture_coord = a_position.zw;
-			gl_Position = vec4(a_position.xy, 0.0, 1.0);
+			v_texture_coord = a_xyuv.zw;
+			gl_Position = vec4(a_xyuv.xy, 0.0, 1.0);
 		}`,
-		// Fragment Shader
-		`varying highp vec2 v_texture_coord;
+		`// Fragment Shader
+		precision highp float;
+		varying highp vec2 v_texture_coord;
 		uniform sampler2D u_hypothesis;
 		uniform sampler2D u_experience;
+		void main() {
+			vec4 experience = texture2D(u_experience, v_texture_coord);
+			vec2 hypothesis_coords = vec2(v_texture_coord.x, 1.0 - v_texture_coord.y);
+			vec4 hypothesis = texture2D(u_hypothesis, hypothesis_coords);
+			vec4 e = experience - hypothesis;
+			gl_FragColor = vec4(e.x*e.x, e.y*e.y, e.z*e.z, 1.0);
+		}`);
 
-		void main(void) {
-			//vec4 hypothesis = texture2D(u_hypothesis, v_texture_coord);
-			//vec4 experience = texture2D(u_experience, v_texture_coord);
-			//vec4 delta = hypothesis - experience;
-			//gl_FragColor = vec4(delta.x*delta.x, delta.y*delta.y, delta.z*delta.z, 1.0);
-			//gl_FragColor = vec4(v_texture_coord, 0.0, 1.0);
-			gl_FragColor = vec4(texture2D(u_hypothesis, v_texture_coord).xyz, 1.0);
-		}`
-	);	
-	testPositionAttributeLocation = gl.getAttribLocation(testProgram, 'a_position');
-	testColorUniformLocation = gl.getUniformLocation(testProgram, 'u_color');
-	evaluationPositionAttributeLocation = gl.getAttribLocation(evaluationProgram, 'a_position');
-	evaluationHypothesisUniform = gl.getUniformLocation(evaluationProgram, 'u_hypothesis');
-	evaluationExperienceUniform = gl.getUniformLocation(evaluationProgram, 'u_experience');
+	errorAttribXYUV = gl.getAttribLocation(errorShaderProgram, 'a_xyuv');
+	errorUniformHypothesis = gl.getUniformLocation(errorShaderProgram, 'u_hypothesis');
+	errorUniformExperience = gl.getUniformLocation(errorShaderProgram, 'u_experience');
 
-	function loadTexture(path) {
-		let texture = gl.createTexture();
+	flatShaderProgram = loadShaderProgram(
+		`// Vertex Shader
+		attribute vec2 a_xy;
+		void main() {
+			gl_Position = vec4(a_xy, 0.0, 1.0);
+		}`,
+		`// Fragment Shader
+		precision mediump float;
+		uniform vec3 u_color;
+		void main() {
+			gl_FragColor = vec4(u_color, 1.0);
+		}`);
 
-		// Temp texure while main texture loads
-		gl.bindTexture(gl.TEXTURE_2D, texture);
-		let tempPixel = new Uint8Array([255, 0, 255, 255]); // Magenta
-		gl.texImage2D(
-			gl.TEXTURE_2D,
-			0, // level
-			gl.RGBA, // Internal format
-			1, 1, 0, // width, height, border
-			gl.RGBA, // src format
-			gl.UNSIGNED_BYTE, // src type
-			tempPixel);
-		gl.bindTexture(gl.TEXTURE_2D, null);
+	flatAttribXY = gl.getAttribLocation(flatShaderProgram, 'a_xy');
+	flatUniformColor = gl.getUniformLocation(flatShaderProgram, 'u_color');
 
-		let img = new Image();
-		img.onload = function() {
-			gl.bindTexture(gl.TEXTURE_2D, texture);
-			gl.texImage2D(
-				gl.TEXTURE_2D, 
-				0, // level
-				gl.RGBA, // internal format
-				gl.RGBA, // src format
-				gl.UNSIGNED_BYTE, // src type
-				img);
+	// Frame buffer & texture
+	testTexture = gl.createTexture();
+	gl.bindTexture(gl.TEXTURE_2D, testTexture);
+	gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-			gl.generateMipmap(gl.TEXTURE_2D);
-		};
+	let testDepthBuffer = gl.createRenderbuffer();
+	gl.bindRenderbuffer(gl.RENDERBUFFER, testDepthBuffer);
+	gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, width, height);
 
-		img.src = path;
-		return texture;
-	}
+	testFrameBuffer = gl.createFramebuffer();
+	gl.bindFramebuffer(gl.FRAMEBUFFER, testFrameBuffer);
+	gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, testTexture, 0);
+	gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, testDepthBuffer);
 
+	gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+	gl.bindTexture(gl.TEXTURE_2D, null);
+	gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+
+	// Example Textures
 	textures.push(loadTexture("/assets/img/unrender01.jpg"));
 	textures.push(loadTexture("/assets/img/unrender02.jpg"));
 	textures.push(loadTexture("/assets/img/unrender03.jpg"));
 	textures.push(loadTexture("/assets/img/unrender04.jpg"));
 
-	// Frame Buffers
-	const width = 512;
-	const height = 512;
-	console.assert(canvas.width == width && canvas.height == height);
-	testFrameBuffer = createFrameBuffer(width, height);
-
 	requestAnimationFrame(draw);
 }
 
-function drawTest() {
-	gl.viewport(0, 0, 512, 512);
-
+function drawModel() {
+	gl.viewport(0, 0, width, height);
 	gl.clearColor(
 		model.backgroundColor[0],
 		model.backgroundColor[1],
 		model.backgroundColor[2],
 		1.0);
-
 	gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-	gl.useProgram(testProgram);
-
-	gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
-	let data = new Float32Array(model.vertices);
-	gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
-
-	// Vertex Attrib Pointers
-	gl.vertexAttribPointer(
-		testPositionAttributeLocation,
-		2, // Components
-		gl.FLOAT,
-		false, // Don't normalize
-		0, 0); // No stride, no offset
-	gl.enableVertexAttribArray(testPositionAttributeLocation);
-	gl.uniform3fv(testColorUniformLocation, model.forgroundColor);
-
+	// Draw test triangle
+	gl.useProgram(flatShaderProgram);
+	gl.bindBuffer(gl.ARRAY_BUFFER, triangleVBO);
+	gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(model.vertices), gl.DYNAMIC_DRAW);
+	gl.vertexAttribPointer(flatAttribXY, 2, gl.FLOAT, false, 0, 0);
+	gl.enableVertexAttribArray(flatAttribXY);
+	gl.uniform3fv(flatUniformColor, model.forgroundColor);
 	gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
-function drawEvaluation() {
-	gl.viewport(0, 0, 512, 512);
+function drawError() {
+	gl.bindFramebuffer(gl.FRAMEBUFFER, testFrameBuffer);
+	drawModel();
 
-	gl.clearColor(0.0, 0.0, 0.0, 1.0);
-	gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-
-	gl.useProgram(evaluationProgram);
-
-	gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
-	// Full screen triangle
-	let data = new Float32Array([
-		-1.0, -1.0, 0.0, 2.0, 
-		-1.0, 3.0, 0.0, 0.0,
-		3.0, -1.0, 2.0, 2.0
-	]);
-	gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
-
-	// Vertex Attrib Pointers
-	gl.vertexAttribPointer(
-		evaluationPositionAttributeLocation,
-		4, // Components
-		gl.FLOAT,
-		false, // Don't normalize
-		0, 0); // stride, offset
-	gl.enableVertexAttribArray(evaluationPositionAttributeLocation);
-
-	gl.activeTexture(gl.TEXTURE0);
-	gl.bindTexture(gl.TEXTURE_2D, testFrameBuffer.texture);
-	gl.activeTexture(gl.TEXTURE1);
-	gl.bindTexture(gl.TEXTURE_2D, textures[textureIndex]);
-	gl.uniform1i(evaluationHypothesisUniform, 0); // Tell shader to use texture 0
-	gl.uniform1i(evaluationExperienceUniform, 1); // Tell shader to use texture 1
-
-	gl.drawArrays(gl.TRIANGLES, 0, 3);
-}
-
-function draw () {
-	// Unbind textures so we can render
-	gl.activeTexture(gl.TEXTURE0);
-	gl.bindTexture(gl.TEXTURE_2D, null);
-
-	gl.bindFramebuffer(gl.FRAMEBUFFER, testFrameBuffer.frameBuffer);
-	drawTest();
+	// Draw Error map
 	gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-	drawEvaluation();
 
-	//requestAnimationFrame(draw);
+	gl.viewport(0, 0, width, height);
+	gl.clearColor(0.0, 1.0, 0.0, 1.0);
+	gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+	gl.useProgram(errorShaderProgram);
+	gl.bindBuffer(gl.ARRAY_BUFFER, screenVBO);
+	gl.vertexAttribPointer(errorAttribXYUV, 4, gl.FLOAT, false, 0, 0);
+	gl.enableVertexAttribArray(errorAttribXYUV);
+
+	gl.activeTexture(gl.TEXTURE0);
+	gl.bindTexture(gl.TEXTURE_2D, textures[textureIndex]);
+	gl.uniform1i(errorUniformExperience, 0);
+
+	gl.activeTexture(gl.TEXTURE1);
+	gl.bindTexture(gl.TEXTURE_2D, testTexture);
+	gl.uniform1i(errorUniformHypothesis, 1);
+
+	gl.drawArrays(gl.TRIANGLES, 0, 3);
+	gl.bindTexture(gl.TEXTURE_2D, null);
 }
 
+function getError() {
+	drawError();
+
+	
+
+	// Read error map
+	let pixels = new Uint8Array(width * height * 4);
+	gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+	let error = pixels.reduce((a, b) => (a + (b/255.0)))/(width * height * 3);
+	return error;
+}
+
+function draw() {
+	let oldModel = model;
+	let oldError = getError();
+
+	if (!pause) {
+		// Train background Color
+		for (let i = 0; i < 3; i++) {
+			let error0 = getError();
+			let oldValue = model.backgroundColor[i];
+			model.backgroundColor[i] += delta;
+			let newValue = model.backgroundColor[i];
+			let error1 = getError();
+
+			model.backgroundColor[i] = oldValue - bgTrainRate * (error1 - error0)/delta;
+		}
+
+		// Train Forground Color
+		for (let i = 0; i < 3; i++) {
+			let error0 = getError();
+			let oldValue = model.forgroundColor[i];
+			model.forgroundColor[i] += delta;
+			let error1 = getError();
+
+			model.forgroundColor[i] = oldValue - fgTrainRate * (error1 - error0)/delta;
+		}
+
+		// Train Vertices
+		for (let i = 0; i < model.vertices.length; i++) {
+			let error0 = getError();
+			let oldValue = model.vertices[i];
+			model.vertices[i] += delta;
+			let newValue = model.vertices[i];
+			let error1 = getError();
+
+			model.vertices[i] = oldValue - vertTrainRate * (error1 - error0)/delta;
+		}
+	}
+
+	let error = getError();
+	errorDisplay.innerHTML = "Error: " + error;
+
+	if (!displayErrorMap)
+		drawModel();
+
+	requestAnimationFrame(draw);
+} 
 window.onload = init;
+
+// Control Stuff
+let bgTrainControl = document.querySelector("#bg_train");
+bgTrainControl.oninput = () => bgTrainRate = bgTrainControl.value/100.0;
+let fgTrainControl = document.querySelector("#fg_train");
+fgTrainControl.oninput = () => fgTrainRate = fgTrainControl.value/100.0;
+let vertTrainControl = document.querySelector("#vert_train");
+vertTrainControl.oninput = () => vertTrainRate = vertTrainControl.value/100.0;
+let errorMapControl = document.querySelector("#unrender_display_error");
+errorMapControl.oninput = () => displayErrorMap = !displayErrorMap;
+let pauseControl = document.querySelector("#unrender_pause");
+pauseControl.oninput = () => pause = !pause;
