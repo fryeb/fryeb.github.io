@@ -1,5 +1,7 @@
 const canvas = document.querySelector("#demo01_canvas");
-const gl = canvas.getContext('webgl');
+const gl = WebGLDebugUtils.makeDebugContext(canvas.getContext('webgl', {
+		alpha : false
+	}));
 
 let model = {
 	backgroundColor: [0.25, 0.25, 0.25],
@@ -17,7 +19,8 @@ let evaluationProgram = null; // Shader program for rendering evaluating images
 let testColorUniformLocation = null;
 let testPositionAttributeLocation = null;
 let evaluationPositionAttributeLocation = null;
-let evaluationSamplerUniformLocation = null;
+let evaluationHypothesisUniform = null;
+let evaluationExperienceUniform = null;
 let textures = [];
 let textureIndex = 0; // Which texture are we training to?
 
@@ -59,6 +62,38 @@ function loadShaderProgram(vertSrc, fragSrc) {
 	return shaderProgram;
 }
 
+function createFrameBuffer(width, height) {
+	// Texture
+	let targetTexture = gl.createTexture();
+	gl.bindTexture(gl.TEXTURE_2D, targetTexture);
+	{
+		gl.texImage2D(
+			gl.TEXTURE_2D,
+			0, // level
+			gl.RGBA, // internal format
+			width, height,
+			0, // border
+			gl.RGBA, // src format
+			gl.UNSIGNED_BYTE,
+			null); // no data supplied
+
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+	}
+
+	// Frame buffer
+	let frameBuffer = gl.createFramebuffer();
+	gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuffer);
+	gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, targetTexture, 0);
+	gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+	return {
+		texture: targetTexture,
+		framebuffer: frameBuffer
+	};
+}
+
 function init() {
 	// Vertex Buffer
 	vertexBuffer = gl.createBuffer();
@@ -92,17 +127,23 @@ function init() {
 		}`,
 		// Fragment Shader
 		`varying highp vec2 v_texture_coord;
-		uniform sampler2D u_sampler;
+		uniform sampler2D u_hypothesis;
+		uniform sampler2D u_experience;
 
 		void main(void) {
-			gl_FragColor = texture2D(u_sampler, v_texture_coord);
-			// gl_FragColor = vec4(0.0, vTextureCoord.x, vTextureCoord.y, 1.0);
+			//vec4 hypothesis = texture2D(u_hypothesis, v_texture_coord);
+			//vec4 experience = texture2D(u_experience, v_texture_coord);
+			//vec4 delta = hypothesis - experience;
+			//gl_FragColor = vec4(delta.x*delta.x, delta.y*delta.y, delta.z*delta.z, 1.0);
+			//gl_FragColor = vec4(v_texture_coord, 0.0, 1.0);
+			gl_FragColor = vec4(texture2D(u_hypothesis, v_texture_coord).xyz, 1.0);
 		}`
 	);	
 	testPositionAttributeLocation = gl.getAttribLocation(testProgram, 'a_position');
 	testColorUniformLocation = gl.getUniformLocation(testProgram, 'u_color');
 	evaluationPositionAttributeLocation = gl.getAttribLocation(evaluationProgram, 'a_position');
-	evaluationSamplerUniformLocation = gl.getUniformLocation(evaluationProgram, 'u_sampler');
+	evaluationHypothesisUniform = gl.getUniformLocation(evaluationProgram, 'u_hypothesis');
+	evaluationExperienceUniform = gl.getUniformLocation(evaluationProgram, 'u_experience');
 
 	function loadTexture(path) {
 		let texture = gl.createTexture();
@@ -143,10 +184,26 @@ function init() {
 	textures.push(loadTexture("/assets/img/unrender03.jpg"));
 	textures.push(loadTexture("/assets/img/unrender04.jpg"));
 
+	// Frame Buffers
+	const width = 512;
+	const height = 512;
+	console.assert(canvas.width == width && canvas.height == height);
+	testFrameBuffer = createFrameBuffer(width, height);
+
 	requestAnimationFrame(draw);
 }
 
 function drawTest() {
+	gl.viewport(0, 0, 512, 512);
+
+	gl.clearColor(
+		model.backgroundColor[0],
+		model.backgroundColor[1],
+		model.backgroundColor[2],
+		1.0);
+
+	gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
 	gl.useProgram(testProgram);
 
 	gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
@@ -167,6 +224,11 @@ function drawTest() {
 }
 
 function drawEvaluation() {
+	gl.viewport(0, 0, 512, 512);
+
+	gl.clearColor(0.0, 0.0, 0.0, 1.0);
+	gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
 	gl.useProgram(evaluationProgram);
 
 	gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
@@ -188,25 +250,26 @@ function drawEvaluation() {
 	gl.enableVertexAttribArray(evaluationPositionAttributeLocation);
 
 	gl.activeTexture(gl.TEXTURE0);
+	gl.bindTexture(gl.TEXTURE_2D, testFrameBuffer.texture);
+	gl.activeTexture(gl.TEXTURE1);
 	gl.bindTexture(gl.TEXTURE_2D, textures[textureIndex]);
-	gl.uniform1i(evaluationSamplerUniformLocation, 0); // Tell shader to use texture 0
+	gl.uniform1i(evaluationHypothesisUniform, 0); // Tell shader to use texture 0
+	gl.uniform1i(evaluationExperienceUniform, 1); // Tell shader to use texture 1
 
 	gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
 function draw () {
-	gl.clearColor(
-		model.backgroundColor[0],
-		model.backgroundColor[1],
-		model.backgroundColor[2],
-		1.0);
+	// Unbind textures so we can render
+	gl.activeTexture(gl.TEXTURE0);
+	gl.bindTexture(gl.TEXTURE_2D, null);
 
-	gl.clear(gl.COLOR_BUFFER_BIT);
-
-	//drawTest();
+	gl.bindFramebuffer(gl.FRAMEBUFFER, testFrameBuffer.frameBuffer);
+	drawTest();
+	gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 	drawEvaluation();
 
-	requestAnimationFrame(draw);
+	//requestAnimationFrame(draw);
 }
 
 window.onload = init;

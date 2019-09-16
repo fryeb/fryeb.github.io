@@ -12,6 +12,7 @@ title: "Unrenderer"
 	<img src="/assets/img/unrender04.jpg" alt="test01" onclick="textureIndex = 3"/>
 </div>
 </div>
+<script src="/assets/js/webgl-debug.js"></script>
 <script src="/assets/js/posts/demo01.js"></script>
 
 Hello, world!
